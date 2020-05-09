@@ -1,0 +1,87 @@
+#!/bin/bash -e
+
+cert='localhost.gdbsign'
+keychain='/Library/Keychains/System.keychain'
+
+cleanup() {
+  rv=$?
+  trap - EXIT
+  [[ -f "${certfile}" ]] && rm -f "${certfile}"
+  [[ -f "${keyfile}" ]] && rm -f "${keyfile}"
+  exit ${rv}
+}
+
+die() {
+  echo "$0:" "$@" >&2
+  exit 1
+}
+
+has_cert() {
+  security -q find-certificate -c "${cert}" 2>/dev/null || return 1
+}
+
+create_cert() {
+  trap cleanup EXIT
+  
+  certfile="$(mktemp "/tmp/$(basename "$0").XXXXXX")"
+  keyfile="$(mktemp "/tmp/$(basename "$0").XXXXXX")"
+
+  echo 'Creating self-signed certificate'
+  if ! openssl req -batch -x509 -config config -newkey rsa:2048 -days 1 \
+    -keyout "${keyfile}" -out "${certfile}" 2>/dev/null; then
+    die 'Failed to create a self-signed certificate'
+  fi
+
+  echo 'Importing certificate into the System keychain'
+  security import <(cat "${keyfile}" "${certfile}") -k "${keychain}"
+  echo 'Adding cert to System keychain'
+  security add-trusted-cert -d -p codeSign -u 1 -k "${keychain}" "${certfile}"
+
+  rm -f "${keyfile}" "${certfile}"
+  keyfile=
+  certfile=
+  trap - EXIT
+}
+
+# Make sure the certificate is in the System keychain and is not expired.
+verify_cert() {
+  local regex='^keychain: "([^"]*)"$'
+  local output
+
+  if ! output=$(security -q find-certificate -c "${cert}" -Z | grep -E '^keychain: '); then
+    die "Could not find certificate \"${cert}\""
+  fi
+  if ! [[ "${output}" =~ ${regex} ]]; then
+    die "Could not determine which keychain certificate \"${cert}\" belongs to"
+  fi
+  if [[ "${BASH_REMATCH[1]}" != "${keychain}" ]]; then
+    die "Certificate \"${cert}\" belongs to the wrong keychain: ${BASH_REMATCH[1]}"
+  fi
+}
+
+sign_gdb() {
+  # Extract the SHA-1 hash for use as a signing identifier.
+  local regex='^SHA-1 hash: (.*)'
+  if ! output=$(security -q find-certificate -c "${cert}" -Z | grep -E '^SHA-1 hash: '); then
+    die "Could not find certificate \"${cert}\""
+  fi
+  if ! [[ "${output}" =~ ${regex} ]]; then
+    die "Could not determine the SHA-1 hash"
+  fi
+
+  codesign --entitlements gdb.xml -fs "${BASH_REMATCH[1]}" "$1"
+}
+
+main() {
+  if [[ $# -ne 1 ]]; then
+    die "Usage: $0 /path/to/gdb"
+  fi
+  if [[ ${UID} -ne 0 ]]; then
+    die "Run as root: $ sudo $0"
+  fi
+  has_cert || create_cert
+  verify_cert
+  sign_gdb "$1"
+}
+
+main "$@"

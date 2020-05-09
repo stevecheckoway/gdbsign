@@ -1,0 +1,18 @@
+[ req ]
+default_bits = 2048
+encrypt_key = no
+default_md = sha256
+utf8 = yes
+string_mask = utf8only
+prompt = no
+distinguished_name = codesign_dn
+req_extensions = codesign_reqext
+x509_extensions = codesign_reqext
+
+[ codesign_dn ]
+commonName = "localhost.gdbsign"
+
+[ codesign_reqext ]
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,codeSigning
+subjectKeyIdentifier = hash
